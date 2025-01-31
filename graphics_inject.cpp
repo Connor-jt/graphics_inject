@@ -41,9 +41,10 @@ int main()
     cout << "Hello World!\n";
 
     DWORD proc_id_array[1024], cbNeeded;
-    if (!EnumProcesses(proc_id_array, sizeof(proc_id_array), &cbNeeded)){
+    if (!EnumProcesses(proc_id_array, sizeof(proc_id_array), &cbNeeded)) {
         cout << "couldn't find target process: failed to enumerate.\n";
-        return 1;}
+        return 1;
+    }
 
 
     HANDLE process_id;
@@ -51,10 +52,9 @@ int main()
     HMODULE dxgi_module = 0;
 
     DWORD processes_count = cbNeeded / sizeof(DWORD);
-    for (int i = 0; i < processes_count; i++){
+    for (int i = 0; i < processes_count; i++) {
         if (!proc_id_array[i]) continue;
 
-        // Get a handle to the process.
         process_id = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, proc_id_array[i]);
         if (!process_id) continue;
 
@@ -65,28 +65,27 @@ int main()
             // if current process matches target process by name
             char process_name[MAX_PATH];
             GetModuleBaseNameA(process_id, modules_array[0], process_name, sizeof(process_name));
-            if (process_name != "") continue;
+            if (strcmp(process_name, "DirectX11_Sample2.exe")) continue;
 
             // iterate through modules to find matching
             int modules_count = mods_buffersize_used / sizeof(HMODULE);
             for (int j = 1; j < modules_count; j++) {
 
                 GetModuleBaseNameA(process_id, modules_array[j], process_name, sizeof(process_name));
-                if (process_name == "d3d11.dll")
+                if (!strcmp(process_name, "d3d11.dll"))
                     d3d11_module = modules_array[j];
-                else if (process_name == "dxgi.dll")
+                else if (!strcmp(process_name, "dxgi.dll"))
                     dxgi_module = modules_array[j];
             }
             break; // also skipping the part where we close the handle
         }
-                
+
         CloseHandle(process_id);
     }
 
-    // look for supported dlls
 
 
-    // attempt to hook functions??
+
 
 
 }
