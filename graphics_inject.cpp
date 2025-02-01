@@ -11,6 +11,21 @@
 
 using namespace std;
 
+const char* target_process = "DirectX11_Sample2.exe";
+const unsigned long long d3d11_checksum = 0xa0a241b9b7d37785ull;
+const unsigned long long dxgi_checksum  = 0xe709c1ef94866bc4ull;
+
+const unsigned long long D3D11_DrawIndexed_offset           = 0x12dc30;
+const unsigned long long D3D11_VSSetShader_offset           = 0x12a740;
+const unsigned long long D3D11_VSSetConstantBuffers_offset  = 0x12ad30;
+const unsigned long long DXGI_Present_offset                = 0x0018c0;
+
+const unsigned long long D3D11_DrawIndexed_inject_size = 18;
+const unsigned long long D3D11_VSSetShader_inject_size = 14;
+const unsigned long long D3D11_VSSetConstantBuffers_inject_size = 16;
+const unsigned long long DXGI_Present_inject_size = 12;
+
+
 unsigned long long calculateChecksum(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
@@ -26,15 +41,39 @@ unsigned long long calculateChecksum(const std::string& filename) {
 
 
 class datapage {
-    class globals {
+    char d3d11_DrawIndexed_func_page[256];
+    char d3d11_VSSetShader_func_page[256];
+    char d3d11_VSSetConstantBuffers_func_page[512];
+    char dxgi_Present_func_page[4096];
 
-    };
+    void* last_d3d11DeviceContext;
+    void* last_ID3D11Buffer; // from VSSetConstantBuffers
+    void* last_ID3D11VertexShader; // from VSSetShader
 
-    //void*;
-
+    unsigned long long debug1; // func 1 access count
+    unsigned long long debug2; // func 2 access count
+    unsigned long long debug3; // func 3 access count
+    unsigned long long debug4; // func 4 access count
 };
 
+// 16x NOP instruction so we can correctly identify the end of the function
+#define INJECT_CONCLUDE NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP
 
+void __declspec(naked) InjectedFunc_D3D11_DrawIndexed(){
+    __asm {
+        PUSHFD
+        PUSHAD
+        CALL jumpHookCallback
+        POPAD
+        POPFD
+        POP EAX
+        MOV AL, 1
+        POP EDI
+        POP ESI
+        JMP[restoreJumpHook]
+        INJECT_CONCLUDE
+    }
+}
 
 int main()
 {
@@ -45,7 +84,6 @@ int main()
         cout << "couldn't find target process: failed to enumerate.\n";
         return 1;
     }
-
 
     HANDLE process_id;
     HMODULE d3d11_module = 0;
@@ -65,29 +103,61 @@ int main()
             // if current process matches target process by name
             char process_name[MAX_PATH];
             GetModuleBaseNameA(process_id, modules_array[0], process_name, sizeof(process_name));
-            if (strcmp(process_name, "DirectX11_Sample2.exe")) continue;
+            if (strcmp(process_name, target_process)) continue;
 
             // iterate through modules to find matching
             int modules_count = mods_buffersize_used / sizeof(HMODULE);
             for (int j = 1; j < modules_count; j++) {
 
                 GetModuleBaseNameA(process_id, modules_array[j], process_name, sizeof(process_name));
-                if (!strcmp(process_name, "d3d11.dll"))
-                    d3d11_module = modules_array[j];
-                else if (!strcmp(process_name, "dxgi.dll"))
-                    dxgi_module = modules_array[j];
-            }
-            break; // also skipping the part where we close the handle
+                // check for d3d11.dll match
+                if (!strcmp(process_name, "d3d11.dll")) {
+                    GetModuleFileNameExA(process_id, modules_array[j], process_name, sizeof(process_name));
+                    if (calculateChecksum(process_name) == d3d11_checksum)
+                         d3d11_module = modules_array[j];
+                    else {
+                        cout << "bad checksum for found d3d11.dll module.\n";
+                        return -1;}
+                }
+                // check for dxgi.dll match
+                else if (!strcmp(process_name, "dxgi.dll")) {
+                    GetModuleFileNameExA(process_id, modules_array[j], process_name, sizeof(process_name));
+                    if (calculateChecksum(process_name) == dxgi_checksum)
+                        dxgi_module = modules_array[j];
+                    else {
+                        cout << "bad checksum for found dxgi.dll module.\n";
+                        return -1;}
+            }}
+            goto found_target_proc;
         }
-
         CloseHandle(process_id);
     }
+    cout << "could not find target process.\n";
+    return -1;
+
+    found_target_proc:
+    // check to make sure we loaded the graphics modules
+    if (!d3d11_module) {
+        cout << "no d3d11 module found.\n";
+        return -1;}
+    if (!dxgi_module) {
+        cout << "no dxgi module found.\n";
+        return -1;}
+
+    // get function addressed
+    char* draw_indexed_address  = (char*)d3d11_module + D3D11_DrawIndexed_offset;
+    char* set_shader_address    = (char*)d3d11_module + D3D11_VSSetShader_offset;
+    char* set_constants_address = (char*)d3d11_module + D3D11_VSSetConstantBuffers_offset;
+    char* dxgi_present_address  = (char*)dxgi_module  + DXGI_Present_offset;
 
 
 
 
 
+    string test;
+    cin >> test;
 
+    return 0;
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu
