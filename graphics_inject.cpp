@@ -57,23 +57,27 @@ class datapage {
 };
 
 // 16x NOP instruction so we can correctly identify the end of the function
-#define INJECT_CONCLUDE NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP NOP
+//#define INJECT_CONCLUDE NOP 
 
-void __declspec(naked) InjectedFunc_D3D11_DrawIndexed(){
+void InjectedFunc_D3D11_DrawIndexed(){
     __asm {
-        PUSHFD
-        PUSHAD
-        CALL jumpHookCallback
-        POPAD
-        POPFD
-        POP EAX
-        MOV AL, 1
-        POP EDI
-        POP ESI
-        JMP[restoreJumpHook]
-        INJECT_CONCLUDE
+        ;// write device ptr into global slot
+        mov rax, 0x1020304050607080
+        mov qword ptr[rax], rcx
+        ;// increment global counter
+        mov rax, 0x1020304050607080
+        mov qword ptr[rax], rcx
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
     }
 }
+
 
 int main()
 {
@@ -150,6 +154,31 @@ int main()
     char* set_constants_address = (char*)d3d11_module + D3D11_VSSetConstantBuffers_offset;
     char* dxgi_present_address  = (char*)dxgi_module  + DXGI_Present_offset;
 
+
+
+
+
+
+    char intermediate_buffer[512];
+
+    void* function_ptr = &InjectedFunc_D3D11_DrawIndexed;
+    
+    // loop through function until we find the 90909090909090 signature
+    char* last_instruction_ptr = (char*)function_ptr;
+    while (*((unsigned long long*)last_instruction_ptr++) != 0x9090909090909090);
+
+    UINT8 function_size = (UINT8)last_instruction_ptr - (UINT8)function_ptr;
+
+    memcpy(intermediate_buffer, function_ptr, function_size);
+    // get the bytes from our injection spot to write to the end of our injected function
+
+
+    if (!ReadProcessMemory(process_id, draw_indexed_address, intermediate_buffer + function_size, D3D11_DrawIndexed_inject_size, 0)) {
+        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        return -1;
+    }
+
+    // then append our jmp return code (12 bytes)
 
 
 
