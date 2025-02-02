@@ -9,6 +9,8 @@
 #include <iostream>
 #include <fstream>
 
+#include <vector>
+
 using namespace std;
 
 const char* target_process = "DirectX11_Sample2.exe";
@@ -77,6 +79,97 @@ void InjectedFunc_D3D11_DrawIndexed(){
     }
 }
 
+class PtrFixups {
+public:
+    int offset;
+    void* ptr;
+};
+
+bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* injected_func, vector<PtrFixups> ptr_fixups) {
+    char intermediate_buffer[256];
+
+    // loop through function until we find the 90909090909090 signature
+    char* last_instruction_ptr = (char*)injected_func;
+    while (*((unsigned long long*)last_instruction_ptr) != 0x9090909090909090)
+        last_instruction_ptr++;
+
+    UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)injected_func;
+
+    int buffer_size = function_size + hook_size + 13;
+    if (sizeof(intermediate_buffer) <= buffer_size) {
+        cout << "failed to inject: not enough intermediate buffer space for d3d11_DrawIndexed injection.\n";
+        return false;}
+
+    memcpy(intermediate_buffer, injected_func, function_size);
+
+    // insert ptrs to globals references
+    for (auto& element : ptr_fixups)
+        *(UINT64*)(intermediate_buffer + element.offset) = (UINT64)(element.ptr);
+    
+    // copy over instructions that get overwritten by detour hook
+    if (!ReadProcessMemory(process_id, hook_address, intermediate_buffer + function_size, hook_size, 0)) {
+        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        return false;}
+
+    // then append our jmp return code (13 bytes)
+    intermediate_buffer[function_size + hook_size] = 0x50; // push rax
+    intermediate_buffer[function_size + hook_size + 1] = 0x48; // rex.W
+    intermediate_buffer[function_size + hook_size + 2] = 0xB8; // mov rax, imm64
+    *(UINT64*)(intermediate_buffer + function_size + hook_size + 3) = (UINT64)(hook_address + 12); // imm64
+    intermediate_buffer[function_size + hook_size + 11] = 0xFF; // jmp
+    intermediate_buffer[function_size + hook_size + 12] = 0xE0; // rax
+
+    // copy generated assembly code to pagefile
+    if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
+        cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
+        return false;}
+
+    // then configure the hook detour thing
+    // push data into the intermediate buffer before pushing
+    intermediate_buffer[0] = 0x48; // rex
+    intermediate_buffer[1] = 0xB8; // mov rax, imm64
+    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
+    intermediate_buffer[10] = 0xFF; // jmp
+    intermediate_buffer[11] = 0xE0; // rax
+    // this part executes after we return from the function
+    intermediate_buffer[12] = 0x58; // pop rax
+
+    // NOP out any loose bytes
+    int i = 13;
+    while (i < hook_size) intermediate_buffer[i++] = 0x90;
+
+    // pause process
+    if (!DebugActiveProcess(GetProcessId(process_id))) {
+        std::cerr << "failed to inject: could not (debug) pause thread.\n";
+        return false;}
+
+    if (!DebugSetProcessKillOnExit(false)) {
+        std::cerr << "failed to inject: could not set debug pause value.\n";
+        return false;}
+
+    // clear page protection
+    DWORD oldProtect;
+    if (!VirtualProtectEx(process_id, hook_address, hook_size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        std::cerr << "failed to inject: could not clear memory protection.\n";
+        return false;}
+
+    // write opcode changes
+    if (!WriteProcessMemory(process_id, hook_address, intermediate_buffer, hook_size, 0)) {
+        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        return false;}
+
+    // restore page protection
+    if (!VirtualProtectEx(process_id, hook_address, hook_size, oldProtect, &oldProtect)) {
+        cout << "[CRITICAL] failed to inject: could not reapply memory protection.\n";
+        return false;}
+
+    // resume process
+    if (!DebugActiveProcessStop(GetProcessId(process_id))) {
+        std::cerr << "failed to inject: could not (debug) resume thread.\n";
+        return false;}
+
+    return true;
+}
 
 int main()
 {
@@ -155,7 +248,7 @@ int main()
     char* dxgi_present_address  = (char*)dxgi_module  + DXGI_Present_offset;
 
 
-    // create pagefile
+    // allocate pagefile
     datapage_ptr = (datapage*)VirtualAllocEx(process_id, NULL, sizeof(datapage), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!datapage_ptr) {
         std::cerr << "failed to inject: could not (inject) allocate data chunk.\n";
@@ -163,98 +256,9 @@ int main()
         return -1;}
 
 
-    char intermediate_buffer[256];
-
-    void* function_ptr = InjectedFunc_D3D11_DrawIndexed;
+    hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, 
+        {{2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2}});
     
-    // loop through function until we find the 90909090909090 signature
-    char* last_instruction_ptr = (char*)function_ptr;
-    while (*((unsigned long long*)last_instruction_ptr++) != 0x9090909090909090);
-    last_instruction_ptr--;
-
-    UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)function_ptr;
-
-    int buffer_size = function_size + D3D11_DrawIndexed_inject_size + 13;
-    if (sizeof(intermediate_buffer) <= buffer_size) {
-        cout << "failed to inject: not enough buffer space for d3d11_DrawIndexed injection.\n";
-        return -1;}
-
-    memcpy(intermediate_buffer, function_ptr, function_size);
-    // get the bytes from our injection spot to write to the end of our injected function
-
-    // insert ptrs to globals references
-    // +2
-    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->debug1);
-    // +15
-    *(UINT64*)(intermediate_buffer + 15) = (UINT64)(&datapage_ptr->debug2);
-
-
-    if (!ReadProcessMemory(process_id, draw_indexed_address, intermediate_buffer + function_size, D3D11_DrawIndexed_inject_size, 0)) {
-        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
-        return -1;}
-
-    // then append our jmp return code (13 bytes)
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size     ] = 0x50; // push rax
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 1 ] = 0x48; // rex.W
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 2 ] = 0xB8; // mov rax, imm64
-    *(UINT64*)(intermediate_buffer + function_size + D3D11_DrawIndexed_inject_size + 3) = (UINT64)(draw_indexed_address + 12); // imm64
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 11] = 0xFF; // jmp
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 12] = 0xE0; // rax
-
-
-    // copy generated assembly code to pagefile
-    if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
-        cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
-        cout << GetLastError();
-        return -1;}
-
-
-    // then make the actual hook into the function
-
-    // push data into the intermediate buffer before pushing
-    intermediate_buffer[0] = 0x48; // rex
-    intermediate_buffer[1] = 0xB8; // mov rax, imm64
-    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
-    intermediate_buffer[10] = 0xFF; // jmp
-    intermediate_buffer[11] = 0xE0; // rax
-    // this part executes after we return from the function
-    intermediate_buffer[12] = 0x58; // pop rax
-
-    // NOP out any loose bytes
-    int i = 13;
-    while (i < D3D11_DrawIndexed_inject_size) intermediate_buffer[i++] = 0x90;
-    
-    // pause process
-    //if (!DebugActiveProcess(GetProcessId(process_id))) {
-    //    std::cerr << "failed to inject: could not (debug) pause thread.\n";
-    //    return -1;}
-    
-    //if (!DebugSetProcessKillOnExit(false)) {
-    //    std::cerr << "failed to inject: could not set debug pause value.\n";
-    //   return -1;}
-
-
-    // clear page protection
-    DWORD oldProtect;
-    if (!VirtualProtectEx(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        std::cerr << "failed to inject: could not clear memory protection.\n";
-        return -1;}
-
-    // write opcode changes
-    if (!WriteProcessMemory(process_id, draw_indexed_address, intermediate_buffer, D3D11_DrawIndexed_inject_size, 0)) {
-        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
-        return -1;}
-
-    // restore page protection
-    if (!VirtualProtectEx(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, oldProtect, &oldProtect)) {
-        cout << "[CRITICAL] failed to inject: could not reapply memory protection.\n";
-        return -1;}
-    
-    // resume process
-    //if (!DebugActiveProcessStop(GetProcessId(process_id))) {
-    //    std::cerr << "failed to inject: could not (debug) resume thread.\n";
-    //    return -1;
-    //}
 
 
     while (true) {
