@@ -23,7 +23,7 @@ const unsigned long long DXGI_Present_offset                = 0x0018c0;
 const unsigned long long D3D11_DrawIndexed_inject_size = 18;
 const unsigned long long D3D11_VSSetShader_inject_size = 14;
 const unsigned long long D3D11_VSSetConstantBuffers_inject_size = 16;
-const unsigned long long DXGI_Present_inject_size = 12;
+const unsigned long long DXGI_Present_inject_size = 14;
 
 
 unsigned long long calculateChecksum(const std::string& filename) {
@@ -174,7 +174,7 @@ int main()
 
     UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)function_ptr;
 
-    int buffer_size = function_size + D3D11_DrawIndexed_inject_size + 12;
+    int buffer_size = function_size + D3D11_DrawIndexed_inject_size + 13;
     if (sizeof(intermediate_buffer) <= buffer_size) {
         cout << "failed to inject: not enough buffer space for d3d11_DrawIndexed injection.\n";
         return -1;}
@@ -193,17 +193,18 @@ int main()
         cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
         return -1;}
 
-    // then append our jmp return code (12 bytes)
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size]      = 0x48; // rex
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 1 ] = 0xB8; // mov rax, imm64
-    *(UINT64*)(intermediate_buffer + function_size + D3D11_DrawIndexed_inject_size + 2) = (UINT64)(draw_indexed_address + 12); // imm64
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 10] = 0xFF; // jmp
-    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 11] = 0xE0; // rax
+    // then append our jmp return code (13 bytes)
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size     ] = 0x50; // push rax
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 1 ] = 0x48; // rex.W
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 2 ] = 0xB8; // mov rax, imm64
+    *(UINT64*)(intermediate_buffer + function_size + D3D11_DrawIndexed_inject_size + 3) = (UINT64)(draw_indexed_address + 12); // imm64
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 11] = 0xFF; // jmp
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 12] = 0xE0; // rax
 
 
     // copy generated assembly code to pagefile
     if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
-        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
         cout << GetLastError();
         return -1;}
 
@@ -216,9 +217,11 @@ int main()
     *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
     intermediate_buffer[10] = 0xFF; // jmp
     intermediate_buffer[11] = 0xE0; // rax
+    // this part executes after we return from the function
+    intermediate_buffer[12] = 0x58; // pop rax
 
     // NOP out any loose bytes
-    int i = 12;
+    int i = 13;
     while (i < D3D11_DrawIndexed_inject_size) intermediate_buffer[i++] = 0x90;
     
     // pause process
