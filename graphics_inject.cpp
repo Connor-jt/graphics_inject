@@ -41,6 +41,7 @@ unsigned long long calculateChecksum(const std::string& filename) {
 
 
 class datapage {
+public:
     char d3d11_DrawIndexed_func_page[256];
     char d3d11_VSSetShader_func_page[256];
     char d3d11_VSSetConstantBuffers_func_page[512];
@@ -50,14 +51,12 @@ class datapage {
     void* last_ID3D11Buffer; // from VSSetConstantBuffers
     void* last_ID3D11VertexShader; // from VSSetShader
 
-    unsigned long long debug1; // func 1 access count
-    unsigned long long debug2; // func 2 access count
+    unsigned long long debug1; // func 1 rcx
+    unsigned long long debug2; // func 1 incrementor
     unsigned long long debug3; // func 3 access count
     unsigned long long debug4; // func 4 access count
 };
-
-// 16x NOP instruction so we can correctly identify the end of the function
-//#define INJECT_CONCLUDE NOP 
+datapage* datapage_ptr = 0;
 
 void InjectedFunc_D3D11_DrawIndexed(){
     __asm {
@@ -66,7 +65,7 @@ void InjectedFunc_D3D11_DrawIndexed(){
         mov qword ptr[rax], rcx
         ;// increment global counter
         mov rax, 0x1020304050607080
-        mov qword ptr[rax], rcx
+        inc qword ptr[rax]
         NOP
         NOP
         NOP
@@ -97,7 +96,8 @@ int main()
     for (int i = 0; i < processes_count; i++) {
         if (!proc_id_array[i]) continue;
 
-        process_id = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, proc_id_array[i]);
+        //process_id = OpenProcess(PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE, FALSE, proc_id_array[i]);
+        process_id = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proc_id_array[i]);
         if (!process_id) continue;
 
         HMODULE modules_array[256];
@@ -155,32 +155,115 @@ int main()
     char* dxgi_present_address  = (char*)dxgi_module  + DXGI_Present_offset;
 
 
+    // create pagefile
+    datapage_ptr = (datapage*)VirtualAllocEx(process_id, NULL, sizeof(datapage), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!datapage_ptr) {
+        std::cerr << "failed to inject: could not (inject) allocate data chunk.\n";
+        cout << GetLastError() << endl;
+        return -1;}
 
 
+    char intermediate_buffer[256];
 
-
-    char intermediate_buffer[512];
-
-    void* function_ptr = &InjectedFunc_D3D11_DrawIndexed;
+    void* function_ptr = InjectedFunc_D3D11_DrawIndexed;
     
     // loop through function until we find the 90909090909090 signature
     char* last_instruction_ptr = (char*)function_ptr;
     while (*((unsigned long long*)last_instruction_ptr++) != 0x9090909090909090);
+    last_instruction_ptr--;
 
-    UINT8 function_size = (UINT8)last_instruction_ptr - (UINT8)function_ptr;
+    UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)function_ptr;
+
+    int buffer_size = function_size + D3D11_DrawIndexed_inject_size + 12;
+    if (sizeof(intermediate_buffer) <= buffer_size) {
+        cout << "failed to inject: not enough buffer space for d3d11_DrawIndexed injection.\n";
+        return -1;}
 
     memcpy(intermediate_buffer, function_ptr, function_size);
     // get the bytes from our injection spot to write to the end of our injected function
 
+    // insert ptrs to globals references
+    // +2
+    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->debug1);
+    // +15
+    *(UINT64*)(intermediate_buffer + 15) = (UINT64)(&datapage_ptr->debug2);
+
 
     if (!ReadProcessMemory(process_id, draw_indexed_address, intermediate_buffer + function_size, D3D11_DrawIndexed_inject_size, 0)) {
         cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
-        return -1;
-    }
+        return -1;}
 
     // then append our jmp return code (12 bytes)
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size]      = 0x48; // rex
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 1 ] = 0xB8; // mov rax, imm64
+    *(UINT64*)(intermediate_buffer + function_size + D3D11_DrawIndexed_inject_size + 2) = (UINT64)(draw_indexed_address + 12); // imm64
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 10] = 0xFF; // jmp
+    intermediate_buffer[function_size + D3D11_DrawIndexed_inject_size + 11] = 0xE0; // rax
 
 
+    // copy generated assembly code to pagefile
+    if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
+        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        cout << GetLastError();
+        return -1;}
+
+
+    // then make the actual hook into the function
+
+    // push data into the intermediate buffer before pushing
+    intermediate_buffer[0] = 0x48; // rex
+    intermediate_buffer[1] = 0xB8; // mov rax, imm64
+    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
+    intermediate_buffer[10] = 0xFF; // jmp
+    intermediate_buffer[11] = 0xE0; // rax
+
+    // NOP out any loose bytes
+    int i = 12;
+    while (i < D3D11_DrawIndexed_inject_size) intermediate_buffer[i++] = 0x90;
+    
+    // pause process
+    //if (!DebugActiveProcess(GetProcessId(process_id))) {
+    //    std::cerr << "failed to inject: could not (debug) pause thread.\n";
+    //    return -1;}
+    
+    //if (!DebugSetProcessKillOnExit(false)) {
+    //    std::cerr << "failed to inject: could not set debug pause value.\n";
+    //   return -1;}
+
+
+    // clear page protection
+    DWORD oldProtect;
+    if (!VirtualProtectEx(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        std::cerr << "failed to inject: could not clear memory protection.\n";
+        return -1;}
+
+    // write opcode changes
+    if (!WriteProcessMemory(process_id, draw_indexed_address, intermediate_buffer, D3D11_DrawIndexed_inject_size, 0)) {
+        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+        return -1;}
+
+    // restore page protection
+    if (!VirtualProtectEx(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, oldProtect, &oldProtect)) {
+        cout << "[CRITICAL] failed to inject: could not reapply memory protection.\n";
+        return -1;}
+    
+    // resume process
+    //if (!DebugActiveProcessStop(GetProcessId(process_id))) {
+    //    std::cerr << "failed to inject: could not (debug) resume thread.\n";
+    //    return -1;
+    //}
+
+
+    while (true) {
+        Sleep(500);
+
+        UINT64 debug_values[4];
+        if (ReadProcessMemory(process_id, &datapage_ptr->debug1, debug_values, 32, 0)) {
+            cout << "debug1: " << debug_values[0] << " debug2: " << debug_values[1] << " debug3: " << debug_values[2] << " debug4: " << debug_values[3] << endl;
+        } else {
+            cout << "failed loop memcheck.\n";
+        }
+    }
 
 
     string test;
