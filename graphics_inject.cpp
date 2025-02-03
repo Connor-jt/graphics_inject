@@ -88,64 +88,103 @@ public:
 bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* injected_func, vector<PtrFixups> ptr_fixups) {
     char intermediate_buffer[256];
 
-    // loop through function until we find the 90909090909090 signature
-    char* last_instruction_ptr = (char*)injected_func;
-    while (*((unsigned long long*)last_instruction_ptr) != 0x9090909090909090)
-        last_instruction_ptr++;
-
-    UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)injected_func;
-
-    int buffer_size = function_size + hook_size + 13;
-    if (sizeof(intermediate_buffer) <= buffer_size) {
-        cout << "failed to inject: not enough intermediate buffer space for d3d11_DrawIndexed injection.\n";
+    if (hook_size < 3) {
+        cout << "failed to inject: hook size is too small.\n";
         return false;}
 
-    memcpy(intermediate_buffer, injected_func, function_size);
+    // if hook size is less than 13, then we need to use a small hook, also we need to verify that theres enough space
+    bool is_using_hook = false;
+    if (hook_size < 13) {
+        is_using_hook = true;
+        // NOTE: we could improve this algorithm to search for any match within the neighboring 255 bytes, but this could introduce issues with CC bytes that may not be used for 'int 3'
+        // grab the function's 12 proceeding bytes
+        if (!ReadProcessMemory(process_id, hook_address-12, intermediate_buffer, 12, 0)) {
+            cout << "failed to inject: could not read bytes proceding d3d11_DrawIndexed.\n";
+            return false;}
 
-    // insert ptrs to globals references
-    for (auto& element : ptr_fixups)
-        *(UINT64*)(intermediate_buffer + element.offset) = (UINT64)(element.ptr);
+        // check the proceding 12 bytes from the function ptr, to make sure that they're all free to use
+        for (int i = 11; i >= 0; i--) {
+            if (intermediate_buffer[i] != (char)0xCC) {
+                cout << "failed to inject: not enough blank space before function to fit short hook jump.\n";
+                return false;
+    }}}
+
+    // copy over our function (and instructions overwritten by the hook) to process memory
+    {
+        // loop through function until we find the 90909090909090 signature
+        char* last_instruction_ptr = (char*)injected_func;
+        while (*((unsigned long long*)last_instruction_ptr) != 0x9090909090909090)
+            last_instruction_ptr++;
+
+        UINT64 function_size = (UINT64)last_instruction_ptr - (UINT64)injected_func;
+
+        int buffer_size = function_size + hook_size + 13;
+        if (sizeof(intermediate_buffer) <= buffer_size) {
+            cout << "failed to inject: not enough intermediate buffer space for d3d11_DrawIndexed injection.\n";
+            return false;}
+
+        memcpy(intermediate_buffer, injected_func, function_size);
+
+        // insert ptrs to globals references
+        for (auto& element : ptr_fixups)
+            *(UINT64*)(intermediate_buffer + element.offset) = (UINT64)(element.ptr);
     
-    // copy over instructions that get overwritten by detour hook
-    if (!ReadProcessMemory(process_id, hook_address, intermediate_buffer + function_size, hook_size, 0)) {
-        cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
-        return false;}
+        // copy over instructions that get overwritten by detour hook
+        if (!ReadProcessMemory(process_id, hook_address, intermediate_buffer + function_size, hook_size, 0)) {
+            cout << "failed to inject: could not read d3d11_DrawIndexed opcodes.\n";
+            return false;}
 
-    // then append our jmp return code (13 bytes)
-    intermediate_buffer[function_size + hook_size] = 0x50; // push rax
-    intermediate_buffer[function_size + hook_size + 1] = 0x48; // rex.W
-    intermediate_buffer[function_size + hook_size + 2] = 0xB8; // mov rax, imm64
-    *(UINT64*)(intermediate_buffer + function_size + hook_size + 3) = (UINT64)(hook_address + 12); // imm64
-    intermediate_buffer[function_size + hook_size + 11] = 0xFF; // jmp
-    intermediate_buffer[function_size + hook_size + 12] = 0xE0; // rax
+        // then append our jmp return code (13 bytes)
+        intermediate_buffer[function_size + hook_size] = 0x50; // push rax
+        intermediate_buffer[function_size + hook_size + 1] = 0x48; // rex.W
+        intermediate_buffer[function_size + hook_size + 2] = 0xB8; // mov rax, imm64
+        *(UINT64*)(intermediate_buffer + function_size + hook_size + 3) = (UINT64)(hook_address + (is_using_hook? 2 : 12) ); // imm64, either 12/2 depending on what kind of hook patch we use
+        intermediate_buffer[function_size + hook_size + 11] = 0xFF; // jmp
+        intermediate_buffer[function_size + hook_size + 12] = 0xE0; // rax
 
-    // copy generated assembly code to pagefile
-    if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
-        cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
-        return false;}
+        // copy generated assembly code to pagefile
+        if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
+            cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
+            return false;}
+    }
 
-    // then configure the hook detour thing
-    // push data into the intermediate buffer before pushing
+    //write all the hook detour opcodes into a buffer to write to the process
+    
+
+
+    // bytes for regular hook patch
     intermediate_buffer[0] = 0x48; // rex
     intermediate_buffer[1] = 0xB8; // mov rax, imm64
     *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
     intermediate_buffer[10] = 0xFF; // jmp
     intermediate_buffer[11] = 0xE0; // rax
-    // this part executes after we return from the function
+    // this part executes after we return from the function (also this gets overwritten in the func below)
     intermediate_buffer[12] = 0x58; // pop rax
 
+    int total_patch_bytes_size = 13;
+    // mini hook patch
+    if (is_using_hook) {
+        hook_address -= 12;
+        hook_size += 12;
+        total_patch_bytes_size = 15;
+        // write our mini hook
+        intermediate_buffer[12] = 0xEB; // jmp rel8
+        intermediate_buffer[13] = 0xF2; // -14
+        intermediate_buffer[14] = 0x58; // pop rax
+    }
+
+
     // NOP out any loose bytes
-    int i = 13;
-    while (i < hook_size) intermediate_buffer[i++] = 0x90;
+    while (total_patch_bytes_size < hook_size) intermediate_buffer[total_patch_bytes_size++] = 0x90;
 
     // pause process
-    if (!DebugActiveProcess(GetProcessId(process_id))) {
-        std::cerr << "failed to inject: could not (debug) pause thread.\n";
-        return false;}
+    //if (!DebugActiveProcess(GetProcessId(process_id))) {
+    //    std::cerr << "failed to inject: could not (debug) pause thread.\n";
+    //    return false;}
 
-    if (!DebugSetProcessKillOnExit(false)) {
-        std::cerr << "failed to inject: could not set debug pause value.\n";
-        return false;}
+    //if (!DebugSetProcessKillOnExit(false)) {
+    //    std::cerr << "failed to inject: could not set debug pause value.\n";
+    //    return false;}
 
     // clear page protection
     DWORD oldProtect;
@@ -164,9 +203,9 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
         return false;}
 
     // resume process
-    if (!DebugActiveProcessStop(GetProcessId(process_id))) {
-        std::cerr << "failed to inject: could not (debug) resume thread.\n";
-        return false;}
+    //if (!DebugActiveProcessStop(GetProcessId(process_id))) {
+    //    std::cerr << "[CRITICAL] failed to inject: could not (debug) resume thread.\n";
+    //    return false;}
 
     return true;
 }
@@ -178,8 +217,7 @@ int main()
     DWORD proc_id_array[1024], cbNeeded;
     if (!EnumProcesses(proc_id_array, sizeof(proc_id_array), &cbNeeded)) {
         cout << "couldn't find target process: failed to enumerate.\n";
-        return 1;
-    }
+        return 1;}
 
     HANDLE process_id;
     HMODULE d3d11_module = 0;
@@ -256,10 +294,11 @@ int main()
         return -1;}
 
 
-    hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, 
+    hook_function(process_id, draw_indexed_address, 4, InjectedFunc_D3D11_DrawIndexed, 
         {{2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2}});
     
-
+    //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed,
+    //    { {2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2} });
 
     while (true) {
         Sleep(500);
