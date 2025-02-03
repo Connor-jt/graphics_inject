@@ -335,12 +335,12 @@ int main()
     
     // test loading the moddy module
     HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\DirectXModdy\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll");
-    if (!datapage_ptr) {
+    if (!moddy_module) {
         std::cerr << "failed to inject: could not load moddy DLL.\n";
         return -1;}
 
-
-
+    // now load our cool function just to make sure its there??
+    auto var = GetProcAddress(moddy_module, "DLLRun");
 
 
     // allocate pagefile
