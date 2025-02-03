@@ -85,7 +85,10 @@ public:
     void* ptr;
 };
 
-bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* injected_func, vector<PtrFixups> ptr_fixups) {
+// NOTE: max size of 256 right now, must include injected_func_dst_size if we want to support more
+bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* injected_func, void* injected_func_dst, 
+    vector<PtrFixups> ptr_fixups) {
+
     char intermediate_buffer[256];
 
     if (hook_size < 3) {
@@ -143,7 +146,7 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
         intermediate_buffer[function_size + hook_size + 12] = 0xE0; // rax
 
         // copy generated assembly code to pagefile
-        if (!WriteProcessMemory(process_id, &datapage_ptr->d3d11_DrawIndexed_func_page, intermediate_buffer, buffer_size, 0)) {
+        if (!WriteProcessMemory(process_id, injected_func_dst, intermediate_buffer, buffer_size, 0)) {
             cout << "failed to inject: could not write d3d11_DrawIndexed injected function.\n";
             return false;}
     }
@@ -155,7 +158,7 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
     // bytes for regular hook patch
     intermediate_buffer[0] = 0x48; // rex
     intermediate_buffer[1] = 0xB8; // mov rax, imm64
-    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(&datapage_ptr->d3d11_DrawIndexed_func_page); // imm64
+    *(UINT64*)(intermediate_buffer + 2) = (UINT64)(injected_func_dst); // imm64
     intermediate_buffer[10] = 0xFF; // jmp
     intermediate_buffer[11] = 0xE0; // rax
     // this part executes after we return from the function (also this gets overwritten in the func below)
@@ -208,6 +211,50 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
     //    return false;}
 
     return true;
+}
+
+
+
+HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name ) {
+    LPVOID path_str_ptr = VirtualAllocEx(process_id, 0, strlen(dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
+    if (!path_str_ptr) {
+        cout << "failed to load dll: could not allocate path string memory.\n";
+        return 0;}
+
+    if (!WriteProcessMemory(process_id, path_str_ptr, dll_path, strlen(dll_path) + 1, NULL)) {
+        cout << "failed to load dll: could not write to path string memory.\n";
+        VirtualFreeEx(process_id, path_str_ptr, 0, MEM_RELEASE);
+        return 0;}
+
+    HANDLE hThread = CreateRemoteThread(process_id, NULL, 0, (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"), path_str_ptr, 0, NULL);
+    if (!hThread) {
+        cout << "failed to load dll: could not create remote thread.\n";
+        VirtualFreeEx(process_id, path_str_ptr, 0, MEM_RELEASE);
+        return 0;}
+
+    WaitForSingleObject(hThread, INFINITE);
+    VirtualFreeEx(process_id, path_str_ptr, 0, MEM_RELEASE);
+    CloseHandle(hThread);
+
+    // then we get the module 
+    HMODULE modules_array[256];
+    DWORD mods_buffersize_used;
+    if (!EnumProcessModules(process_id, modules_array, sizeof(modules_array), &mods_buffersize_used)){
+        cout << "failed to load dll: could not iterate modules.\n";
+        return 0;}
+
+    // if current process matches target process by name
+    char process_name[MAX_PATH];
+    // iterate through modules to find matching
+    int modules_count = mods_buffersize_used / sizeof(HMODULE);
+    for (int j = 1; j < modules_count; j++) {
+        GetModuleBaseNameA(process_id, modules_array[j], process_name, sizeof(process_name));
+        if (!strcmp(process_name, dll_name))
+            return modules_array[j];
+    }
+
+    cout << "failed to load dll: could not find our module via iteration.\n";
+    return 0;
 }
 
 int main()
@@ -285,20 +332,39 @@ int main()
     char* set_constants_address = (char*)d3d11_module + D3D11_VSSetConstantBuffers_offset;
     char* dxgi_present_address  = (char*)dxgi_module  + DXGI_Present_offset;
 
+    
+    // test loading the moddy module
+    HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\DirectXModdy\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll");
+    if (!datapage_ptr) {
+        std::cerr << "failed to inject: could not load moddy DLL.\n";
+        return -1;}
+
+
+
+
 
     // allocate pagefile
     datapage_ptr = (datapage*)VirtualAllocEx(process_id, NULL, sizeof(datapage), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!datapage_ptr) {
         std::cerr << "failed to inject: could not (inject) allocate data chunk.\n";
-        cout << GetLastError() << endl;
         return -1;}
 
 
-    hook_function(process_id, draw_indexed_address, 4, InjectedFunc_D3D11_DrawIndexed, 
+    hook_function(process_id, draw_indexed_address, 4, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
         {{2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2}});
     
     //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed,
     //    { {2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2} });
+
+
+    //HANDLE hThread = CreateRemoteThread(process_id, NULL, 0, (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"), pDllPath, 0, NULL);
+    //if (hThread == NULL) {
+    //    printf("Failed to create remote thread.\n");
+    //    VirtualFreeEx(process_id, pDllPath, 0, MEM_RELEASE);
+    //    CloseHandle(process_id);
+    //    return 1;
+    //}
+
 
     while (true) {
         Sleep(500);
@@ -310,11 +376,6 @@ int main()
             cout << "failed loop memcheck.\n";
         }
     }
-
-
-    string test;
-    cin >> test;
-
     return 0;
 }
 
