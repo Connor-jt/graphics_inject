@@ -53,7 +53,7 @@ public:
 datapage* datapage_ptr = 0;
 DLLGLobals* globals_ptr = 0;
 
-void InjectedFunc_DllCall() {
+__attribute__((naked)) void InjectedFunc_DllCall() {
     __asm {
         ;// save registers
         push rax
@@ -88,7 +88,7 @@ void InjectedFunc_DllCall() {
         NOP
     }
 }
-void InjectedFunc_D3D11_DrawIndexed(){
+__attribute__((naked)) void InjectedFunc_D3D11_DrawIndexed(){
     __asm {
         ;// write device ptr into global slot
         mov rax, 0x1020304050607080
@@ -425,10 +425,12 @@ int main()
     //    {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
     
     // testing global data access hook
-    hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
-        {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
+    //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
+    //    {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
 
     // testing DLL run call hook
+    hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_DllCall, &datapage_ptr->d3d11_DrawIndexed_func_page,
+        { {15, lookups[0].ptr} });
 
 
     while (true) {
