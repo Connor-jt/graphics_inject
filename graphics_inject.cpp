@@ -1,5 +1,6 @@
 // graphics_inject.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
+#include "../DirectXModdy/globals.h"
 
 #include <windows.h>
 #include <stdio.h>
@@ -46,20 +47,47 @@ class datapage {
 public:
     char d3d11_DrawIndexed_func_page[256];
     char d3d11_VSSetShader_func_page[256];
-    char d3d11_VSSetConstantBuffers_func_page[512];
-    char dxgi_Present_func_page[4096];
-
-    void* last_d3d11DeviceContext;
-    void* last_ID3D11Buffer; // from VSSetConstantBuffers
-    void* last_ID3D11VertexShader; // from VSSetShader
-
-    unsigned long long debug1; // func 1 rcx
-    unsigned long long debug2; // func 1 incrementor
-    unsigned long long debug3; // func 3 access count
-    unsigned long long debug4; // func 4 access count
+    char d3d11_VSSetConstantBuffers_func_page[256];
+    char dxgi_Present_func_page[256];
 };
 datapage* datapage_ptr = 0;
+DLLGLobals* globals_ptr = 0;
 
+void InjectedFunc_DllCall() {
+    __asm {
+        ;// save registers
+        push rax
+        push rcx
+        push rdx
+        push rdi
+        push rsi
+        push  r8
+        push  r9
+        push r10
+        push r11
+        ;// make a call to DLL function
+        mov rax, 0x1020304050607080
+        call rax
+        ;// restore registers
+        pop r11
+        pop r10
+        pop  r9
+        pop  r8
+        pop rsi
+        pop rdi
+        pop rdx
+        pop rcx
+        pop rax
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+    }
+}
 void InjectedFunc_D3D11_DrawIndexed(){
     __asm {
         ;// write device ptr into global slot
@@ -181,13 +209,13 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
     while (total_patch_bytes_size < hook_size) intermediate_buffer[total_patch_bytes_size++] = 0x90;
 
     // pause process
-    //if (!DebugActiveProcess(GetProcessId(process_id))) {
-    //    std::cerr << "failed to inject: could not (debug) pause thread.\n";
-    //    return false;}
+    if (!DebugActiveProcess(GetProcessId(process_id))) {
+        std::cerr << "failed to inject: could not (debug) pause thread.\n";
+        return false;}
 
-    //if (!DebugSetProcessKillOnExit(false)) {
-    //    std::cerr << "failed to inject: could not set debug pause value.\n";
-    //    return false;}
+    if (!DebugSetProcessKillOnExit(false)) {
+        std::cerr << "failed to inject: could not set debug pause value.\n";
+        return false;}
 
     // clear page protection
     DWORD oldProtect;
@@ -206,9 +234,9 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
         return false;}
 
     // resume process
-    //if (!DebugActiveProcessStop(GetProcessId(process_id))) {
-    //    std::cerr << "[CRITICAL] failed to inject: could not (debug) resume thread.\n";
-    //    return false;}
+    if (!DebugActiveProcessStop(GetProcessId(process_id))) {
+        std::cerr << "[CRITICAL] failed to inject: could not (debug) resume thread.\n";
+        return false;}
 
     return true;
 }
@@ -220,7 +248,7 @@ public:
     void* ptr;
 };
 
-HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncLookups>& lookups) {
+HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncLookups>& lookups, void** globals) {
     LPVOID path_str_ptr = VirtualAllocEx(process_id, 0, strlen(dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
     if (!path_str_ptr) {
         cout << "failed to load dll: could not allocate path string memory.\n";
@@ -263,15 +291,29 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         cout << "failed to load dll: could not find our module via iteration.\n";
         return 0;}
 
+    // load a copy of the module to this process so we can map offsets
     HMODULE query_module = LoadLibraryA(dll_path);
     if (!query_module) {
         std::cerr << "failed to inject: could not load moddy DLL to our own process to query function offsets.\n";
         return 0;}
 
+    // get offset of globals struct
+    if (globals) {
+        typedef void*(__stdcall* DLLGlobals)();
+        DLLGlobals globals_func = (DLLGlobals)GetProcAddress(query_module, "DLLGlobals");
+        if (!globals_func) {
+            std::cerr << "failed to inject: could not find address of a fetch globals function.\n";
+            cout << GetLastError();
+            return 0;}
 
+        // convert address found in query module to offset, then apply that offset to the external module
+        *globals = (void*)((UINT64)hooked_dll + ((UINT64)(globals_func()) - (UINT64)query_module));
+    }
+
+    // figure out offsets of all requested functions
     for (auto& element : lookups) {
         void* func_address = GetProcAddress(query_module, element.name);
-        if (!query_module) {
+        if (!func_address) {
             std::cerr << "failed to inject: could not find address of a specified function.\n";
             return 0;}
         // convert address found in query module to offset, then apply that offset to the external module
@@ -364,7 +406,7 @@ int main()
     
     // test loading the moddy module
     vector<FuncLookups> lookups = { {"DLLRun", 0} };
-    HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\DirectXModdy\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll", lookups);
+    HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\graphics_inject\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll", lookups, (void**)&globals_ptr);
     if (!moddy_module) {
         std::cerr << "failed to inject: could not load moddy DLL.\n";
         return -1;}
@@ -378,19 +420,22 @@ int main()
         return -1;}
 
 
-    hook_function(process_id, draw_indexed_address, 4, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
-        {{2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2}});
+    // testing the short hook
+    //hook_function(process_id, draw_indexed_address, 4, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
+    //    {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
     
-    //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed,
-    //    { {2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2} });
+    // testing global data access hook
+    hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
+        {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
 
+    // testing DLL run call hook
 
 
     while (true) {
         Sleep(500);
-
+        cout << "running\n";
         UINT64 debug_values[4];
-        if (ReadProcessMemory(process_id, &datapage_ptr->debug1, debug_values, 32, 0)) {
+        if (ReadProcessMemory(process_id, &globals_ptr->debug1, debug_values, 32, 0)) {
             cout << "debug1: " << debug_values[0] << " debug2: " << debug_values[1] << " debug3: " << debug_values[2] << " debug4: " << debug_values[3] << endl;
         } else {
             cout << "failed loop memcheck.\n";
