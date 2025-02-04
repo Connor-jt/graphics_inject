@@ -214,8 +214,13 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
 }
 
 
+class FuncLookups {
+public:
+    char* name;
+    void* ptr;
+};
 
-HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name ) {
+HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncLookups>& lookups) {
     LPVOID path_str_ptr = VirtualAllocEx(process_id, 0, strlen(dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
     if (!path_str_ptr) {
         cout << "failed to load dll: could not allocate path string memory.\n";
@@ -247,14 +252,38 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name ) {
     char process_name[MAX_PATH];
     // iterate through modules to find matching
     int modules_count = mods_buffersize_used / sizeof(HMODULE);
+
+    HMODULE hooked_dll = 0; // invalid pointer becuase its memory belongs to the other process
     for (int j = 1; j < modules_count; j++) {
         GetModuleBaseNameA(process_id, modules_array[j], process_name, sizeof(process_name));
         if (!strcmp(process_name, dll_name))
-            return modules_array[j];
+            hooked_dll = modules_array[j];
+    }
+    if (!hooked_dll) {
+        cout << "failed to load dll: could not find our module via iteration.\n";
+        return 0;}
+
+    HMODULE query_module = LoadLibraryA(dll_path);
+    if (!query_module) {
+        std::cerr << "failed to inject: could not load moddy DLL to our own process to query function offsets.\n";
+        return 0;}
+
+
+    for (auto& element : lookups) {
+        void* func_address = GetProcAddress(query_module, element.name);
+        if (!query_module) {
+            std::cerr << "failed to inject: could not find address of a specified function.\n";
+            return 0;}
+        // convert address found in query module to offset, then apply that offset to the external module
+        element.ptr = (void*)((UINT64)hooked_dll + ((UINT64)func_address - (UINT64)query_module));
     }
 
-    cout << "failed to load dll: could not find our module via iteration.\n";
-    return 0;
+    // release query module
+    if (!FreeLibrary(query_module)) {
+        std::cerr << "failed to inject: failed to release query module.\n";
+        return 0;}
+
+    return hooked_dll;
 }
 
 int main()
@@ -334,13 +363,12 @@ int main()
 
     
     // test loading the moddy module
-    HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\DirectXModdy\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll");
+    vector<FuncLookups> lookups = { {"DLLRun", 0} };
+    HMODULE moddy_module = load_dll(process_id, "D:\\Projects\\VS\\DirectXModdy\\x64\\Debug\\DirectXModdy.dll", "DirectXModdy.dll", lookups);
     if (!moddy_module) {
         std::cerr << "failed to inject: could not load moddy DLL.\n";
         return -1;}
 
-    // now load our cool function just to make sure its there??
-    auto var = GetProcAddress(moddy_module, "DLLRun");
 
 
     // allocate pagefile
@@ -356,14 +384,6 @@ int main()
     //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed,
     //    { {2, &datapage_ptr->debug1}, {15, &datapage_ptr->debug2} });
 
-
-    //HANDLE hThread = CreateRemoteThread(process_id, NULL, 0, (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"), pDllPath, 0, NULL);
-    //if (hThread == NULL) {
-    //    printf("Failed to create remote thread.\n");
-    //    VirtualFreeEx(process_id, pDllPath, 0, MEM_RELEASE);
-    //    CloseHandle(process_id);
-    //    return 1;
-    //}
 
 
     while (true) {
