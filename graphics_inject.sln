@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "graphics_inject", "graphics
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DirectXModdy", "..\DirectXModdy\DirectXModdy.vcxproj", "{1E2FDA44-26B5-4334-AE65-DD201753151F}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DirectXModdyHookTest", "..\DirectXModdyHookTest\DirectXModdyHookTest.vcxproj", "{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -31,6 +33,14 @@ Global
 		{1E2FDA44-26B5-4334-AE65-DD201753151F}.Release|x64.Build.0 = Release|x64
 		{1E2FDA44-26B5-4334-AE65-DD201753151F}.Release|x86.ActiveCfg = Release|Win32
 		{1E2FDA44-26B5-4334-AE65-DD201753151F}.Release|x86.Build.0 = Release|Win32
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Debug|x64.ActiveCfg = Debug|x64
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Debug|x64.Build.0 = Debug|x64
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Debug|x86.ActiveCfg = Debug|Win32
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Debug|x86.Build.0 = Debug|Win32
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Release|x64.ActiveCfg = Release|x64
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Release|x64.Build.0 = Release|x64
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Release|x86.ActiveCfg = Release|Win32
+		{AF855B0E-AECD-4BFE-BA93-1F7C2B02C9E8}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

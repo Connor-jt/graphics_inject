@@ -291,8 +291,42 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         cout << "failed to load dll: could not find our module via iteration.\n";
         return 0;}
 
+
+    // then setup our windows event hook dll
+    HMODULE winproc_hook_module = LoadLibraryA("D:\\Projects\\VS\\graphics_inject\\x64\\Debug\\DirectXModdyHookTest.dll");
+    if (!winproc_hook_module) {
+        std::cerr << "failed to inject: could not load windows event hook DLL to our own process.\n";
+        return 0;}
+    // fetch windows event hook function
+    auto globals_func = GetProcAddress(winproc_hook_module, "WndProcHook");
+    if (!globals_func) {
+        std::cerr << "failed to inject: could not find address of a fetch globals function.\n";
+        return 0;}
+    // find the processes main thread (we just get whatever window thread they have open)
+    auto EnumWindowsProc = [](HWND hwnd, LPARAM lParam) -> BOOL {
+        DWORD* input = (DWORD*)lParam;
+        DWORD windowProcessId;
+        DWORD thread_id = GetWindowThreadProcessId(hwnd, &windowProcessId);
+        if (windowProcessId == input[1])
+            input[0] = thread_id;
+        return TRUE;
+    };
+    DWORD data[2] = {0, GetProcessId(process_id)};
+    EnumWindows(EnumWindowsProc, (LPARAM)&data);
+    if (!data[0]) {
+        std::cerr << "failed to inject: could not find a thread ID from windows of target process.\n";
+        return 0;}
+    // config hook, which also injects the dll
+    HHOOK handle = SetWindowsHookExA(WH_GETMESSAGE, (HOOKPROC)globals_func, winproc_hook_module, data[0]);
+    if (!handle) {
+        std::cerr << "failed to inject: could not set windows hook.\n";
+        return 0;
+    }
+
+
     // load a copy of the module to this process so we can map offsets
     HMODULE query_module = LoadLibraryA(dll_path);
+    //HMODULE query_module = LoadLibraryExA(dll_path, 0, DONT_RESOLVE_DLL_REFERENCES);
     if (!query_module) {
         std::cerr << "failed to inject: could not load moddy DLL to our own process to query function offsets.\n";
         return 0;}
@@ -303,11 +337,11 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         DLLGlobals globals_func = (DLLGlobals)GetProcAddress(query_module, "DLLGlobals");
         if (!globals_func) {
             std::cerr << "failed to inject: could not find address of a fetch globals function.\n";
-            cout << GetLastError();
             return 0;}
 
         // convert address found in query module to offset, then apply that offset to the external module
-        *globals = (void*)((UINT64)hooked_dll + ((UINT64)(globals_func()) - (UINT64)query_module));
+        UINT64 test1 = ((UINT64)(globals_func()) - (UINT64)query_module);
+        *globals = (void*)((UINT64)hooked_dll + test1);
     }
 
     // figure out offsets of all requested functions
@@ -317,7 +351,8 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
             std::cerr << "failed to inject: could not find address of a specified function.\n";
             return 0;}
         // convert address found in query module to offset, then apply that offset to the external module
-        element.ptr = (void*)((UINT64)hooked_dll + ((UINT64)func_address - (UINT64)query_module));
+        UINT64 test2 = ((UINT64)func_address - (UINT64)query_module);
+        element.ptr = (void*)((UINT64)hooked_dll + test2);
     }
 
     // release query module
@@ -432,6 +467,10 @@ int main()
     //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_DllCall, &datapage_ptr->d3d11_DrawIndexed_func_page,
     //    { {15, lookups[0].ptr} });
 
+    //unsigned long long temp = 1;
+    //if (!WriteProcessMemory(process_id, &globals_ptr->is_active, &temp, 8, 0)) {
+    //    cout << "failed to write activation data on imported dll.\n";
+    //    return -1;}
 
     while (true) {
         Sleep(500);
@@ -445,14 +484,3 @@ int main()
     }
     return 0;
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
