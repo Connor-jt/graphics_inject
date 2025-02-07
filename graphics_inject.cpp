@@ -465,11 +465,11 @@ int main(){
     
     // testing global data access hook
     hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
-        {{2, &globals_ptr->debug1}, {15, &globals_ptr->debug2}});
+        {{2, &globals_ptr->last_d3d11DeviceContext}, {15, &globals_ptr->debug2}});
 
     // testing DLL run call hook
-    //hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_DllCall, &datapage_ptr->d3d11_DrawIndexed_func_page,
-    //    { {15, lookups[0].ptr} });
+    hook_function(process_id, dxgi_present_address, DXGI_Present_inject_size, InjectedFunc_DllCall, &datapage_ptr->d3d11_VSSetShader_func_page,
+        { {15, lookups[0].ptr} });
 
     //unsigned long long temp = 1;
     //if (!WriteProcessMemory(process_id, &globals_ptr->is_active, &temp, 8, 0)) {
@@ -480,7 +480,7 @@ int main(){
         Sleep(500);
         cout << "running\n";
         UINT64 debug_values[4];
-        if (ReadProcessMemory(process_id, &globals_ptr->debug1, debug_values, 32, 0)) {
+        if (ReadProcessMemory(process_id, &globals_ptr->last_d3d11DeviceContext, debug_values, 32, 0)) {
             cout << "debug1: " << debug_values[0] << " debug2: " << debug_values[1] << " debug3: " << debug_values[2] << " debug4: " << debug_values[3] << endl;
         } else {
             cout << "failed loop memcheck.\n";
