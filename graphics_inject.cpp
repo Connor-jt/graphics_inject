@@ -292,38 +292,6 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         return 0;}
 
 
-    //// then setup our windows event hook dll
-    //HMODULE winproc_hook_module = LoadLibraryA("D:\\Projects\\VS\\graphics_inject\\x64\\Debug\\DirectXModdyHookTest.dll");
-    //if (!winproc_hook_module) {
-    //    std::cerr << "failed to inject: could not load windows event hook DLL to our own process.\n";
-    //    return 0;}
-    //// fetch windows event hook function
-    //auto globals_func = GetProcAddress(winproc_hook_module, "WndProcHook");
-    //if (!globals_func) {
-    //    std::cerr << "failed to inject: could not find address of a fetch globals function.\n";
-    //    return 0;}
-    //// find the processes main thread (we just get whatever window thread they have open)
-    //auto EnumWindowsProc = [](HWND hwnd, LPARAM lParam) -> BOOL {
-    //    DWORD* input = (DWORD*)lParam;
-    //    DWORD windowProcessId;
-    //    DWORD thread_id = GetWindowThreadProcessId(hwnd, &windowProcessId);
-    //    if (windowProcessId == input[1])
-    //        input[0] = thread_id;
-    //    return TRUE;
-    //};
-    //DWORD data[2] = {0, GetProcessId(process_id)};
-    //EnumWindows(EnumWindowsProc, (LPARAM)&data);
-    //if (!data[0]) {
-    //    std::cerr << "failed to inject: could not find a thread ID from windows of target process.\n";
-    //    return 0;}
-    //// config hook, which also injects the dll
-    //HHOOK handle = SetWindowsHookExA(WH_GETMESSAGE, (HOOKPROC)globals_func, winproc_hook_module, data[0]);
-    //if (!handle) {
-    //    std::cerr << "failed to inject: could not set windows hook.\n";
-    //    return 0;
-    //}
-
-
     // load a copy of the module to this process so we can map offsets
     HMODULE query_module = LoadLibraryA(dll_path);
     //HMODULE query_module = LoadLibraryExA(dll_path, 0, DONT_RESOLVE_DLL_REFERENCES);
