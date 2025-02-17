@@ -15,6 +15,8 @@
 using namespace std;
 
 const char* target_process = "DirectX11_Sample2.exe";
+//const char* target_process = "mcc-win64-shipping.exe";
+//const char* target_process = "FSD-Win64-Shipping.exe";
 const unsigned long long d3d11_checksum = 0xa0a241b9b7d37785ull;
 const unsigned long long dxgi_checksum  = 0xe709c1ef94866bc4ull;
 
@@ -154,8 +156,10 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
         memcpy(intermediate_buffer, injected_func, function_size);
 
         // insert ptrs to globals references
-        for (auto& element : ptr_fixups)
+        for (auto& element : ptr_fixups) {
+            cout << "patched function to use ptr: " << element.ptr << endl;
             *(UINT64*)(intermediate_buffer + element.offset) = (UINT64)(element.ptr);
+        }
     
         // copy over instructions that get overwritten by detour hook
         if (!ReadProcessMemory(process_id, hook_address, intermediate_buffer + function_size, hook_size, 0)) {
@@ -206,13 +210,13 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
     while (total_patch_bytes_size < hook_size) intermediate_buffer[total_patch_bytes_size++] = 0x90;
 
     // pause process
-    if (!DebugActiveProcess(GetProcessId(process_id))) {
-        std::cerr << "failed to inject: could not (debug) pause thread.\n";
-        return false;}
+    //if (!DebugActiveProcess(GetProcessId(process_id))) {
+    //    std::cerr << "failed to inject: could not (debug) pause thread.\n";
+    //    return false;}
 
-    if (!DebugSetProcessKillOnExit(false)) {
-        std::cerr << "failed to inject: could not set debug pause value.\n";
-        return false;}
+    //if (!DebugSetProcessKillOnExit(false)) {
+    //    std::cerr << "failed to inject: could not set debug pause value.\n";
+    //    return false;}
 
     // clear page protection
     DWORD oldProtect;
@@ -231,9 +235,9 @@ bool hook_function(HANDLE process_id, char* hook_address, int hook_size, void* i
         return false;}
 
     // resume process
-    if (!DebugActiveProcessStop(GetProcessId(process_id))) {
-        std::cerr << "[CRITICAL] failed to inject: could not (debug) resume thread.\n";
-        return false;}
+    //if (!DebugActiveProcessStop(GetProcessId(process_id))) {
+    //    std::cerr << "[CRITICAL] failed to inject: could not (debug) resume thread.\n";
+    //    return false;}
 
     return true;
 }
@@ -247,6 +251,7 @@ public:
 
 HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncLookups>& lookups, void** globals) {
     LPVOID path_str_ptr = VirtualAllocEx(process_id, 0, strlen(dll_path) + 1, MEM_COMMIT, PAGE_READWRITE);
+    cout << "allocated mem at ptr: " << path_str_ptr << endl;
     if (!path_str_ptr) {
         cout << "failed to load dll: could not allocate path string memory.\n";
         return 0;}
@@ -307,6 +312,7 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         // convert address found in query module to offset, then apply that offset to the external module
         UINT64 test1 = ((UINT64)(globals_func()) - (UINT64)query_module);
         *globals = (void*)((UINT64)hooked_dll + test1);
+        cout << "found globals ptr: " << *globals << endl;
     }
 
     // figure out offsets of all requested functions
@@ -318,6 +324,7 @@ HMODULE load_dll(HANDLE process_id, char* dll_path, char* dll_name, vector<FuncL
         // convert address found in query module to offset, then apply that offset to the external module
         UINT64 test2 = ((UINT64)func_address - (UINT64)query_module);
         element.ptr = (void*)((UINT64)hooked_dll + test2);
+        cout << "found function ptr: " << element.ptr << endl;
     }
 
     // release query module
@@ -419,6 +426,7 @@ int main(){
 
     // allocate pagefile
     datapage_ptr = (datapage*)VirtualAllocEx(process_id, NULL, sizeof(datapage), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    cout << "allocated mem at ptr: " << datapage_ptr << endl;
     if (!datapage_ptr) {
         std::cerr << "failed to inject: could not (inject) allocate data chunk.\n";
         return -1;}
@@ -432,14 +440,28 @@ int main(){
     hook_function(process_id, draw_indexed_address, D3D11_DrawIndexed_inject_size, InjectedFunc_D3D11_DrawIndexed, &datapage_ptr->d3d11_DrawIndexed_func_page,
         { {2, &globals_ptr->last_d3d11DeviceContext} });
 
-    // testing DLL run call hook
+
+    // check to see whether steam has put its YUCKY hook into the function (F u steam)
+    unsigned char buf;
+    if (!ReadProcessMemory(process_id, dxgi_present_address, &buf, 1, 0)) {
+        cout << "failed to inject: could not check if steam has injected a hook already.\n";
+        return -1;}
+    // if it has, then simply restore original bytes
+    if (buf == 0xE9) {
+        const unsigned char dxgi_present_og_bytes[5] = { 0x48, 0x89, 0x5C, 0x24, 0x10 };
+        if (!WriteProcessMemory(process_id, dxgi_present_address, dxgi_present_og_bytes, 5, 0)) {
+            cout << "failed to inject: could not overwrite steam's hook.\n";
+            return -1; 
+    }}
+
+
+
+    // draw call hook
     hook_function(process_id, dxgi_present_address, DXGI_Present_inject_size, InjectedFunc_DllCall, &datapage_ptr->d3d11_VSSetShader_func_page,
         { {15, lookups[0].ptr} });
+    
 
-    //unsigned long long temp = 1;
-    //if (!WriteProcessMemory(process_id, &globals_ptr->is_active, &temp, 8, 0)) {
-    //    cout << "failed to write activation data on imported dll.\n";
-    //    return -1;}
+
 
     while (true) {
         Sleep(500);
