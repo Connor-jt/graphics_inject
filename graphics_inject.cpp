@@ -14,9 +14,9 @@
 
 using namespace std;
 
-const char* target_process = "DirectX11_Sample2.exe";
+//const char* target_process = "DirectX11_Sample2.exe";
 //const char* target_process = "mcc-win64-shipping.exe";
-//const char* target_process = "FSD-Win64-Shipping.exe";
+const char* target_process = "FSD-Win64-Shipping.exe";
 const unsigned long long d3d11_checksum = 0xa0a241b9b7d37785ull;
 const unsigned long long dxgi_checksum  = 0xe709c1ef94866bc4ull;
 
@@ -448,6 +448,7 @@ int main(){
         return -1;}
     // if it has, then simply restore original bytes
     if (buf == 0xE9) {
+        cout << "warning: existing hook placeed by steam overlay or other app, removing existing hook.\n";
         const unsigned char dxgi_present_og_bytes[5] = { 0x48, 0x89, 0x5C, 0x24, 0x10 };
         if (!WriteProcessMemory(process_id, dxgi_present_address, dxgi_present_og_bytes, 5, 0)) {
             cout << "failed to inject: could not overwrite steam's hook.\n";
@@ -466,9 +467,11 @@ int main(){
     while (true) {
         Sleep(500);
         cout << "running\n";
-        UINT64 debug_values[4];
-        if (ReadProcessMemory(process_id, &globals_ptr->last_d3d11DeviceContext, debug_values, 32, 0)) {
-            cout << "debug1: " << debug_values[0] << " debug2: " << debug_values[1] << " debug3: " << debug_values[2] << " debug4: " << debug_values[3] << endl;
+        DLLGLobals debug_values = {};
+        if (ReadProcessMemory(process_id, globals_ptr, &debug_values, sizeof(DLLGLobals), 0)) {
+            cout << "swap chain count: " << debug_values.unique_swap_chains << endl;
+            cout << "device1 ptr: " << debug_values.last_d3d11DeviceContext << endl;
+            cout << "device2 ptr: " << debug_values.actual_d3d11DeviceContext << endl;
         } else {
             cout << "failed loop memcheck.\n";
         }
