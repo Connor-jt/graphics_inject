@@ -15,8 +15,9 @@
 using namespace std;
 
 //const char* target_process = "DirectX11_Sample2.exe";
-//const char* target_process = "mcc-win64-shipping.exe";
-const char* target_process = "FSD-Win64-Shipping.exe";
+const char* target_process = "mcc-win64-shipping.exe";
+//const char* target_process = "SkyrimSE.exe";
+//const char* target_process = "FSD-Win64-Shipping.exe";
 const unsigned long long d3d11_checksum = 0xa0a241b9b7d37785ull;
 const unsigned long long dxgi_checksum  = 0xe709c1ef94866bc4ull;
 
